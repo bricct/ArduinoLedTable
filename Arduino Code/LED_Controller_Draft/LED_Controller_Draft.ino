@@ -1,377 +1,408 @@
 #include <FastLED.h>
 
+// ****************** //
+// **** CONSTANTS *** //
+// ****************** //
+
+#define LED_PIN_1 10
+#define LED_PIN_2 12
+
+#define BUTTON_PIN_1 A0
+#define BUTTON_PIN_2 A2
+
 #define NUM_LEDS 60
-#define LED_PIN 10
-#define COLOR_ORDER GRB
 #define LED_TYPE WS2812B
+#define COLOR_ORDER GRB
+#define LED_ON_BRIGHTNESS 60
+#define LED_OFF_BRIGHTNESS 0
 
-#define B_PIN A0
+#define BUTTON_NONE 0
+#define BUTTON_POWER 1
+#define BUTTON_NEXT 2
+#define BUTTON_PREV 3
+#define BUTTON_ANIMATE 4
 
-int sensorValue = 0;
-
-uint8_t brightness = 100;
-uint8_t aState = 0;
-uint8_t mState = 0;
-uint8_t cState = 0;
-uint8_t bState = 0;
-uint8_t color = 0;
-bool on = false;
-uint8_t on_bright = 100;
-uint8_t anim_pos = 0;
+#define BUFFER_SIZE 75
 
 
+// ****************** //
+// ***** STRUCTS **** //
+// ****************** //
 
-CRGB leds[NUM_LEDS];
+struct sensor_buffer {
+  int buffer[BUFFER_SIZE];
+  int index;
+  int size;
+};
+
+
+struct led_strip {
+  uint8_t buttonPin;
+  uint8_t outputPin;
+  bool on;
+  bool rainbow;
+  uint8_t animation;
+  int color;
+  uint8_t brightness;
+  uint8_t lastButton;
+  struct sensor_buffer sensor;
+  struct CRGB *leds;
+};
+
+typedef led_strip LED_STRIP;
+
+
+
+
+// ****************** //
+// ***** GLOBALS **** //
+// ****************** //
+
+LED_STRIP strip_1;
+LED_STRIP strip_2;
+
+CRGB leds_1[NUM_LEDS];
+CRGB leds_2[NUM_LEDS];
+
+// ****************** //
+// ****** SETUP ***** //
+// ****************** //
 
 void setup() {
-  // put your setup code here, to run once:
-  FastLED.setBrightness(brightness);
-  LEDS.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS); 
+
+  setupLedStrips();
+
   delay(1000);
   Serial.begin(9600);
-  pinMode(B_PIN, INPUT);
-  pinMode(LED_PIN, OUTPUT);
-  fill_solid(leds, NUM_LEDS, CRGB::Black);
+
+  pinMode(BUTTON_PIN_1, INPUT);
+  pinMode(BUTTON_PIN_2, INPUT);
+  
+  pinMode(LED_PIN_1, OUTPUT);
+  pinMode(LED_PIN_2, OUTPUT);
+  
+  fill_solid(strip_1.leds, NUM_LEDS, CRGB::Black);
+  fill_solid(strip_2.leds, NUM_LEDS, CRGB::Black);
+
   FastLED.show();
+
+  setupSensorBuffers();
 }
+
+void setupLedStrips() {
+
+  strip_1.buttonPin = BUTTON_PIN_1;
+  strip_1.outputPin = LED_PIN_1;
+  strip_1.on = false;
+  strip_1.animation = 0;
+  strip_1.color = 0;
+  strip_1.lastButton = BUTTON_NONE;
+  strip_1.sensor.index = 0;
+  strip_1.sensor.size = BUFFER_SIZE;
+  strip_1.leds = leds_1;
+  strip_1.rainbow = false;
+
+  strip_2.buttonPin = BUTTON_PIN_2;
+  strip_2.outputPin = LED_PIN_2;
+  strip_2.on = false;
+  strip_2.animation = 0;
+  strip_2.color = 0;
+  strip_2.lastButton = BUTTON_NONE;
+  strip_2.sensor.index = 0;
+  strip_2.sensor.size = BUFFER_SIZE;
+  strip_2.leds = leds_2;
+  strip_2.rainbow = false;
+
+  FastLED.setBrightness(LED_ON_BRIGHTNESS);
+  LEDS.addLeds<LED_TYPE, LED_PIN_1, COLOR_ORDER>(leds_1, NUM_LEDS);
+  LEDS.addLeds<LED_TYPE, LED_PIN_2, COLOR_ORDER>(leds_2, NUM_LEDS); 
+}
+
+void setupSensorBuffers() {
+  for (int i = 0; i < strip_1.sensor.size; i++) {
+    strip_1.sensor.buffer[i] = 0;
+  }
+  for (int i = 0; i < strip_2.sensor.size; i++) {
+    strip_2.sensor.buffer[i] = 0;
+  }
+}
+
+
+
+// ****************** //
+// ****** LOOP ****** //
+// ****************** //
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  bState = readSensor(B_PIN);
-  debounceState(B_PIN);
-  //getColor();
-//  if (bState != 0) { 
-//    Serial.print("bState: ");
-//    Serial.print(bState);
-//    Serial.print("\n");
-//  }
-  if (bState != 0)
-    stateChange();
-  animate();
+
+  update(&strip_1);
+  update(&strip_2);
   
   FastLED.show();
+  delay(1);
+}
 
+void update(led_strip *strip) {
+  int button = readButtonPress(strip);
+
+  handleButtonPress(strip, button);
+
+  animate(strip);
 }
 
 
+int readButtonPress(led_strip *strip) {
+  strip->sensor.index = (strip->sensor.index + 1) % strip->sensor.size;
+  strip->sensor.buffer[strip->sensor.index] = analogRead(strip->buttonPin);
 
+  int button = calcPressedButton(&(strip->sensor));
+  
+  if (button == strip->lastButton) return BUTTON_NONE;
+  strip->lastButton = button;
+  return button;
+}
 
+int calcPressedButton(sensor_buffer *sensor) {
+  int button = -1;
+  for (int i = 0; i < sensor->size; i++) {
+    if (button == -1) {
+      button = translateSignalToButton(sensor->buffer[i]);
+    }
 
-//reads the analog pin and returns which button is pressed
-int readSensor(int buttonPin) {
-  sensorValue = analogRead(buttonPin);
-  //Serial.print(sensorValue);
-  //Serial.print("\n");
+    if (button != translateSignalToButton(sensor->buffer[i])) return BUTTON_NONE;
+
+    return button;
+  }
+}
+
+int translateSignalToButton(int sensorValue) {
   if (sensorValue > 900) {
-    return 1;
-  } else if (sensorValue > 750 && sensorValue < 1000) {
-    return 2;
-  } else if (sensorValue < 750 && sensorValue > 500) {
-    return 3;
-  } else if (sensorValue < 500  && sensorValue > 250 ) {
-    return 4;
-  } else if (sensorValue < 250 ) {
-    return 0;
-  }
-  
+    return BUTTON_POWER;
+  } else if (sensorValue < 900 && sensorValue >= 675) {
+    return BUTTON_NEXT;
+  } else if (sensorValue < 675 && sensorValue >= 400) {
+    return BUTTON_PREV;
+  } else if (sensorValue < 400  && sensorValue >= 200 ) {
+    return BUTTON_ANIMATE;
+  } else if (sensorValue < 200 ) {
+    return BUTTON_NONE;
+  }  
 }
 
 
-//debounces button press to verify signal
-void debounceState(int buttonPin) {
-  int currentState = readSensor(buttonPin);
+void handleButtonPress(led_strip* strip, uint8_t button) {
+  switch(button) {
+    case BUTTON_NONE:
+      return;
 
-   if (bState != currentState) {
-      delay(50);
-      bState = readSensor(buttonPin);
-   }
-
-  if (bState != 0) {
-   while(bState == readSensor(buttonPin)) {
-    delay(1);
-    //Serial.print("delaying...\n");
-   }
-  }
-
-}
-
-
-//sets the color palette based on color state
-void getColor() {
-  //Serial.print("Colors Changed\n");
-  if (cState < 8) {color = cState * 32;}
-  else {color = 0;}
-  
-}
-
-
-//performs an operation based on which button is pressed
-void stateChange() {
-  switch(bState) {
-    case 1:
-      on = !on;
-      if (on) { 
-        cState = 0;
-        getColor();
-        brightness = on_bright;
+    case BUTTON_POWER:
+      strip->on = !(strip->on);
+      if (strip->on) { 
+        strip->brightness = LED_ON_BRIGHTNESS;
       }
       else {
-        brightness = 0;
-        aState = 0;
+        strip->brightness = LED_OFF_BRIGHTNESS;
       }
       return;
-    case 2:
-      if (cState == 8) {
-          aState = 0;
-        }
-      cState++;
-      if (cState > 8) cState = 0;
-//      Serial.print("cState: ");
-//      Serial.print(cState);
-//      Serial.print("\n");
-      else if (cState == 8) {
-        aState = 66;
-        return;
+
+    case BUTTON_NEXT:
+      if (strip->color == 7 && !(strip->rainbow)) {
+        strip->rainbow = true;
       }
-      getColor();
-      return;
-    case 3:
-      if (cState == 8) {
-        aState = 0;
+      else if (strip->rainbow) {
+        strip->rainbow = false;
       }
-      cState--;
-      if (cState > 7) cState = 7;
-//      Serial.print("cState: ");
-//      Serial.print(cState);
-//      Serial.print("\n");
-      getColor();
+      else {
+        strip->color = (strip->color + 1) % 8;
+      }
       return;
-    case 4:
-       if (cState == 8) {
-        aState++;
-        if (aState > 69) aState = 66;
-        return;
-       }
-       aState++;
-//       Serial.print("Incrementing aState\n");
-       if (aState > 4){ aState = 0;}
-//       Serial.print("aState: ");
-//       Serial.print(aState);
-//       Serial.print("\n");
+
+    case BUTTON_PREV:
+      if (strip->color == 0 && !(strip->rainbow)) {
+        strip->rainbow = true;
+      }
+      else if (strip->rainbow) {
+        strip->rainbow = false;
+      }
+      else {
+        strip->color = (strip->color - 1) % 8;
+      }
       return;
+
+    case BUTTON_ANIMATE:
+       strip->animation = (strip->animation) + 1 % 5;
+       if (strip->rainbow && strip->animation == 4) strip->animation = 0;
+      return;
+
     default:
       return;
   }
 }
 
 
-void animate() {
+void animate(led_strip *strip) {
 //  Serial.print("aState: ");
 //  Serial.print(aState);
 //  Serial.print("\n");
-  switch(aState) {
-    case 0:
-      solid();
-      return;
-     case 1:
-      every_other();
-      return;
-     case 2:
-      wave();
-      return;
-     case 3:
-      trace();
-      return;
-     case 4:
-       build();
-       return;
-     case 66:
-        rainbow_wave();
+  if (strip->rainbow) {
+    switch(strip->animation) {
+      case 0:
+        rainbow_wave(strip);
         return;
-     case 67:
-        rainbow_bounce();
+    
+      case 1:
+        rainbow_bounce(strip);
         return;
-     case 68:
-       rainbow_trace();
-       return;
-     case 69:
-      rainbow_build();
-      return;
-     case 200:
-      destroy();
-      return;
-     default:
-      return;   
-  }
-}
+      
+      case 2:
+        rainbow_trace(strip);
+        return;
+      
+      case 3:
+        rainbow_build(strip);
+        return;
 
+      case 200:
+        destroy(strip);
+        return;
 
-
-void solid() {
-  //Serial.print("solid\n");
-  fill_solid(leds, NUM_LEDS, CHSV(color, 255, brightness));
-}
-
-void wave() {
-  fadeToBlackBy(leds, NUM_LEDS, 32);
-  int pos = beatsin8(12, 0, NUM_LEDS-1);
-  //pos = map(pos, 0, 255, 0, NUM_LEDS-1);
-  //leds[pos] = CRGB::Black;
-  leds[pos] += CHSV(color, 255, brightness);
-//  if (pos % 30 == 0) {
-//    solid();
-//  }
-
-  
-//  fill_solid(leds, NUM_LEDS, CRGB::Black);
-//  Serial.print("wave\n");
-//  for (int i = 0; i < NUM_LEDS; i++) {
-//    leds[i].setRGB(colors[0], colors[1], colors[2]);
-//    FastLED.show();
-//    delay(10);
-//    if (i - 2 > 0) {
-//      leds[i-2] = CRGB::Black;
-//    }
-//    FastLED.show();
-//  }
-}
-
-
-void trace() {
-  fadeToBlackBy(leds, NUM_LEDS, 32);
-  int pos = beatsin8(16, 0, NUM_LEDS/2 - 1);
-  leds[pos] = CHSV(color, 255, brightness);
-  leds[NUM_LEDS-1-pos] = CHSV(color, 255, brightness);
-//  pos++;
-//  if (pos > NUM_LEDS-1-pos) {
-//    fill_solid(leds, NUM_LEDS, CHSV(color, 255, 0));
-//    pos = 0;
-//  }
-}
-
-void build() {
-  int pos = beatsin8(16, 0, NUM_LEDS/2);
-  leds[pos] = CHSV(color, 255, brightness);
-  leds[NUM_LEDS-1-pos] = CHSV(color, 255, brightness);
-  if (pos == 30) {
-    delay(500);
-    aState = 200;
-  }
-//  pos++;
-//  if (pos > NUM_LEDS-1-pos) {
-//    fill_solid(leds, NUM_LEDS, CHSV(color, 255, 0));
-//    pos = 0;
-//  }
-}
-
-
-
-
-
-
-
-void destroy() {
-  int pos = beatsin8(16, 0, NUM_LEDS/2);
-  leds[pos] = CHSV(color, 255, 0);
-  leds[NUM_LEDS-1-pos] = CHSV(color, 255, 0);
-  if (pos == 0) {
-    if (cState == 8) {
-      aState = 69;
-    } else {
-      aState = 4;
+      default:
+        return;  
     }
   }
-//  pos++;
-//  if (pos > NUM_LEDS-1-pos) {
-//    fill_solid(leds, NUM_LEDS, CHSV(color, 255, 0));
-//    pos = 0;
-//  }
+
+  else {
+    switch(strip->animation) {
+      case 0:
+        solid(strip);
+        return;
+      
+      case 1:
+        every_other(strip);
+        return;
+      
+      case 2:
+        wave(strip);
+        return;
+      
+      case 3:
+        trace(strip);
+        return;
+      
+      case 4:
+        build(strip);
+        return;   
+      
+      case 200:
+        destroy(strip);
+        return;
+
+      default:
+        return;   
+    }
+  }
 }
 
 
-void every_other() {
+
+// ****************** //
+// *** ANIMATIONS *** //
+// ****************** //
+
+int getColor(int color) {
+  return color << 5;
+}
+
+
+void solid(led_strip *strip) {
+  //Serial.print("solid\n");
+  fill_solid(strip->leds, NUM_LEDS, CHSV(getColor(strip->color), 255, strip->brightness));
+}
+
+void wave(led_strip *strip) {
+  fadeToBlackBy(strip->leds, NUM_LEDS, 32);
+  int pos = beatsin8(12, 0, NUM_LEDS-1);
+
+  strip->leds[pos] += CHSV(getColor(strip->color), 255, strip->brightness);
+}
+
+
+void trace(led_strip *strip) {
+  fadeToBlackBy(strip->leds, NUM_LEDS, 32);
+  int pos = beatsin8(16, 0, NUM_LEDS/2 - 1);
+  strip->leds[pos] = CHSV(getColor(strip->color), 255, strip->brightness);
+  strip->leds[NUM_LEDS-1-pos] = CHSV(getColor(strip->color), 255, strip->brightness);
+}
+
+void build(led_strip *strip) {
+  int pos = beatsin8(16, 0, NUM_LEDS/2);
+  strip->leds[pos] = CHSV(getColor(strip->color), 255, strip->brightness);
+  strip->leds[NUM_LEDS-1-pos] = CHSV(getColor(strip->color), 255, strip->brightness);
+  if (pos == 30) {
+    delay(500);
+    strip->animation = 200;
+  }
+}
+
+void destroy(led_strip *strip) {
+  int pos = beatsin8(16, 0, NUM_LEDS/2);
+  strip->leds[pos] = CHSV(getColor(strip->color), 255, LED_OFF_BRIGHTNESS);
+  strip->leds[NUM_LEDS-1-pos] = CHSV(getColor(strip->color), 255, LED_OFF_BRIGHTNESS);
+  if (pos == 0) {
+    if (strip->rainbow) {
+      strip->animation = 3;
+    } else {
+      strip->animation = 4;
+    }
+  }
+}
+
+
+void every_other(led_strip *strip) {
   uint8_t  brt = beat8(1,255);
   for (int i = 0; i < NUM_LEDS; i++) {
     if (i % 2 == brt % 2) {
-      leds[i] = CHSV(color, 255, 0);
+      strip->leds[i] = CHSV(getColor(strip->color), 255, LED_OFF_BRIGHTNESS);
     } else {
-      leds[i] = CHSV(color, 255, brightness);
+      strip->leds[i] = CHSV(getColor(strip->color), 255, strip->brightness);
     }
   }
 }
 
 
-//void void_fill() {
-
-//}
-
-
-
-void rainbow_bounce() {
+void rainbow_bounce(led_strip *strip) {
   uint8_t thisHue = beatsin8(12,0,255);
-  fill_rainbow(leds, NUM_LEDS, thisHue, 10);
+  fill_rainbow(strip->leds, NUM_LEDS, thisHue, 10);
   for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i].fadeToBlackBy(205);
+    strip->leds[i].fadeToBlackBy(205);
   }
 }
 
 
-
-
-void rainbow_wave() {
+void rainbow_wave(led_strip *strip) {
   uint8_t thisHue = beat8(64, 255);
-  fill_rainbow(leds, NUM_LEDS, thisHue, 10);
+  fill_rainbow(strip->leds, NUM_LEDS, thisHue, 10);
   for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i].fadeToBlackBy(205);
+    strip->leds[i].fadeToBlackBy(205);
   }
 }
 
-void rainbow_trace() {
-  fadeToBlackBy(leds, NUM_LEDS, 32); 
+void rainbow_trace(led_strip *strip) {
+  fadeToBlackBy(strip->leds, NUM_LEDS, 32); 
   uint8_t thisHue = beat8(64, 255);
   int pos = beatsin8(16, 0, NUM_LEDS/2 - 1);
-  leds[pos] = CHSV(thisHue, 255, brightness);
-  leds[NUM_LEDS-1-pos] = CHSV(thisHue, 255, brightness);
-  //fill_rainbow(leds, NUM_LEDS, thisHue, 10);
-  
-
+  strip->leds[pos] = CHSV(thisHue, 255, strip->brightness);
+  strip->leds[NUM_LEDS-1-pos] = CHSV(thisHue, 255, strip->brightness);
 }
 
 
-void rainbow_build() {
+void rainbow_build(led_strip *strip) {
   uint8_t thisHue = beat8(64, 255);
   int pos = beatsin8(16, 0, NUM_LEDS/2);
-  leds[pos] = CHSV(thisHue, 255, brightness);
-  leds[NUM_LEDS-1-pos] = CHSV(thisHue, 255, brightness);
+  strip->leds[pos] = CHSV(thisHue, 255, strip->brightness);
+  strip->leds[NUM_LEDS-1-pos] = CHSV(thisHue, 255, strip->brightness);
   if (pos == 30) {
     delay(500);
-    aState = 200;
+    strip->animation = 200;
   }
 }
-
-
-//void blink_led() {
-//  fill_solid(leds, NUM_LEDS, CHSV(color, 255, brightness));
-//  delay(50);
-//  FastLED.show();
-//  fill_solid(leds, NUM_LEDS, CHSV(color, 255, 0));
-//  delay(50);
-//}
-
-//void stack() {
-//  int pos = beatsin8(16, 0, NUM_LEDS-anim_pos/2);
-//  leds[pos] = CHSV(color, 255, brightness);
-//  leds[NUM_LEDS-1-pos] = CHSV(color, 255, brightness);
-//  if (pos != NUM_LEDS-anim_pos/2) {
-//    leds[pos + 1] = CHSV(color, 255, 0);
-//    leds[NUM_LEDS-1-pos] = CHSV(color, 255, 0);
-//  }
-//  if (pos == anim_pos + 1) {
-//    anim_pos++;
-//  }
-////  pos++;
-////  if (pos > NUM_LEDS-1-pos) {
-////    fill_solid(leds, NUM_LEDS, CHSV(color, 255, 0));
-////    pos = 0;
-////  }
-//}
